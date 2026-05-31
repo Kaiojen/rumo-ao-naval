@@ -318,8 +318,8 @@ export default function App() {
       `}</style>
 
       {/* TOPO */}
-      <header style={{ borderBottom: `1px solid ${T.line}`, background: T.bg2, position: "sticky", top: 0, zIndex: 20 }}>
-        <div style={{ maxWidth: 1080, margin: "0 auto", padding: "12px 16px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+      <header style={{ borderBottom: `1px solid ${T.line}`, background: T.bg2, position: "sticky", top: 0, zIndex: 20, paddingTop: "env(safe-area-inset-top)" }}>
+        <div style={{ maxWidth: 1080, margin: "0 auto", padding: "12px max(16px, env(safe-area-inset-right)) 12px max(16px, env(safe-area-inset-left))", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ width: 38, height: 38, borderRadius: 8, background: `linear-gradient(135deg,${T.gold},#9c7d2e)`, display: "flex", alignItems: "center", justifyContent: "center", color: "#0A1622", fontWeight: 700, flexShrink: 0 }} className="disp">⚓</div>
           <div style={{ flex: 1, minWidth: 140 }}>
             <div className="disp hdr-title" style={{ fontSize: 19, fontWeight: 700, lineHeight: 1 }}>Painel CPACN/2026</div>
@@ -357,7 +357,7 @@ export default function App() {
         </div>
       </header>
 
-      <main style={{ maxWidth: 1080, margin: "0 auto", padding: "18px 16px 64px" }} className="fade" key={tab}>
+      <main style={{ maxWidth: 1080, margin: "0 auto", padding: "18px max(16px, env(safe-area-inset-right)) calc(64px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))" }} className="fade" key={tab}>
         {tab === "painel" && <Painel m={m} week={week} done={done} setDone={setDone} mode={mode} />}
         {tab === "registrar" && mode === "aluno" && <Registrar logs={logs} setLogs={setLogs} />}
         {tab === "progresso" && <Progresso logs={logs} week={week} />}
