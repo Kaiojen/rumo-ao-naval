@@ -4,7 +4,7 @@
 // direto com a chave anon; quem acessa os dados é a Edge Function (service role).
 // A autenticação real (PIN + permissão de leitor/editor) é feita na Edge Function.
 export const SUPABASE_URL = "https://rsckcvgnrujztbrprkts.supabase.co";
-export const SUPABASE_ANON_KEY = "sb_publishable_5w7q1V8GFG_z4Lbm0Dn3Tg_NQbBkZHb";
+export const SUPABASE_ANON_KEY = "sb_publishable_rPh2aERLOFBJS7qRKRSdVQ_9oHmK7Kr";
 
 // Base das "API routes" (Edge Function `api`).
 export const API_BASE = `${SUPABASE_URL}/functions/v1/api`;
