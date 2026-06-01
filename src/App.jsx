@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
+  BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Cell, Legend,
 } from "recharts";
 import { SUPABASE_ANON_KEY, API_BASE } from "./config.js";
@@ -286,7 +286,58 @@ export default function App() {
       const sm = [...sims].sort((a, b) => a.date.localeCompare(b.date))[sims.length - 1];
       lastSim = { label: sm.label, nota: Math.round((sm.scores.mat + sm.scores.ing) * 2.5) };
     }
-    return { qHoje, qSem, totDone, acerto, streak, wlogs, diasSemana, metaPct, weak, lastSim };
+
+    /* ---- visão do PERÍODO TODO (não só a semana) ---- */
+    // Dados agregados por semana das 9 — pra ver a jornada inteira até a prova.
+    const weeksData = WEEKS.map((w) => {
+      const wl = logs.filter((l) => l.date >= w.start && l.date <= w.end);
+      const q = wl.reduce((a, l) => a + (+l.done || 0), 0);
+      const corr = wl.filter((l) => l.correct !== "").reduce((a, l) => a + (+l.correct || 0), 0);
+      const cd = wl.filter((l) => l.correct !== "").reduce((a, l) => a + (+l.done || 0), 0);
+      const dias = new Set(wl.map((l) => l.date)).size;
+      return {
+        n: w.n, label: `S${w.n}`, q, dias,
+        acc: cd ? Math.round((corr / cd) * 100) : null,
+        isNow: w.n === week.n,
+        isPast: w.end < t,
+        isFuture: w.start > t,
+      };
+    });
+
+    // Totais do período inteiro (desde o 1º registro até hoje).
+    const totalDias = new Set(logs.map((l) => l.date)).size;        // dias com estudo
+    const mediaDia = totalDias ? Math.round(totDone / totalDias) : 0; // questões por dia estudado
+    const datas = logs.map((l) => l.date).sort();
+    const primeiraData = datas[0] || null;
+
+    // Consistência: das semanas que já passaram + a atual, em quantas estudou >=4 dias.
+    const semanasDecorridas = weeksData.filter((w) => w.isPast || w.isNow);
+    const semanasBoas = semanasDecorridas.filter((w) => w.dias >= 4).length;
+    const consistencia = semanasDecorridas.length
+      ? Math.round((semanasBoas / semanasDecorridas.length) * 100) : 0;
+
+    // Tendência de acerto: compara as 2 últimas semanas COM dados de acerto.
+    const semComAcc = weeksData.filter((w) => w.acc !== null && (w.isPast || w.isNow));
+    let accTrend = null;
+    if (semComAcc.length >= 2) {
+      const ult = semComAcc[semComAcc.length - 1].acc;
+      const ant = semComAcc[semComAcc.length - 2].acc;
+      accTrend = { delta: ult - ant, de: ant, para: ult };
+    }
+
+    // Ranking de matérias por acerto (todas com dados), pro relatório do responsável.
+    const matStats = SUBJECTS.map((x) => {
+      const ls = logs.filter((l) => l.subject === x.id);
+      const dd = ls.reduce((a, l) => a + (+l.done || 0), 0);
+      const cdl = ls.filter((l) => l.correct !== "").reduce((a, l) => a + (+l.done || 0), 0);
+      const cc = ls.filter((l) => l.correct !== "").reduce((a, l) => a + (+l.correct || 0), 0);
+      return { id: x.id, name: x.name, q: dd, acc: cdl ? Math.round((cc / cdl) * 100) : null, comAcc: cdl >= 10 };
+    });
+
+    return {
+      qHoje, qSem, totDone, acerto, streak, wlogs, diasSemana, metaPct, weak, lastSim,
+      weeksData, totalDias, mediaDia, primeiraData, consistencia, accTrend, matStats,
+    };
   }, [logs, sims, week]);
 
   if (!session) return <Login onLogin={(data) => { auth.save(data.token, data); setSession(data); setMode(data.role === "editor" ? "aluno" : "acomp"); }} />;
@@ -358,7 +409,7 @@ export default function App() {
       </header>
 
       <main style={{ maxWidth: 1080, margin: "0 auto", padding: "18px max(16px, env(safe-area-inset-right)) calc(64px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left))" }} className="fade" key={tab}>
-        {tab === "painel" && <Painel m={m} week={week} done={done} setDone={setDone} mode={mode} />}
+        {tab === "painel" && <Painel m={m} week={week} done={done} setDone={setDone} mode={mode} diasProva={diasProva} />}
         {tab === "registrar" && mode === "aluno" && <Registrar logs={logs} setLogs={setLogs} />}
         {tab === "progresso" && <Progresso logs={logs} week={week} />}
         {tab === "simulados" && <Simulados sims={sims} setSims={setSims} mode={mode} />}
@@ -468,8 +519,8 @@ function SubjDot({ id }) {
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.ink }}><span style={{ width: 9, height: 9, borderRadius: 3, background: s.color }} />{s.name}</span>;
 }
 
-/* ---------- RESUMO (acompanhamento) ---------- */
-function Resumo({ m, week, doneCount, totalTasks }) {
+/* ---------- RESUMO (acompanhamento — relatório do responsável) ---------- */
+function Resumo({ m, week, doneCount, totalTasks, diasProva }) {
   let cor = T.gold, rotulo = "Atenção", txt = "";
   const semDados = m.qSem === 0 && m.diasSemana === 0;
   if (semDados) { cor = T.sub; rotulo = "Sem registros"; txt = "Nenhum estudo registrado nesta semana ainda."; }
@@ -477,31 +528,112 @@ function Resumo({ m, week, doneCount, totalTasks }) {
   else if (m.diasSemana < 3 || (m.acerto > 0 && m.acerto < 55) || m.metaPct < 40) { cor = T.red; rotulo = "Precisa de atenção"; txt = m.diasSemana < 3 ? "Poucos dias de estudo nesta semana." : m.metaPct < 40 ? "Volume de questões abaixo do necessário." : "Acerto baixo — está errando muito."; }
   else { cor = T.gold; rotulo = "Parcial"; txt = "Estudando, mas ainda fora do ritmo ou do acerto ideal."; }
   const linha = `Esta semana: estudou em ${m.diasSemana} de 7 dias, fez ${m.qSem} questões (${m.metaPct}% da meta) com ${m.acerto}% de acerto. Cumpriu ${doneCount} de ${totalTasks} tarefas do plano.`;
+
+  const trendTxt = m.accTrend
+    ? (m.accTrend.delta > 0 ? `subindo (${m.accTrend.de}% → ${m.accTrend.para}%)`
+      : m.accTrend.delta < 0 ? `caindo (${m.accTrend.de}% → ${m.accTrend.para}%)`
+      : `estável (${m.accTrend.para}%)`)
+    : null;
+  const trendCor = m.accTrend ? (m.accTrend.delta > 0 ? T.green : m.accTrend.delta < 0 ? T.red : T.sub) : T.sub;
+
   return (
-    <div style={{ background: T.card, border: `1px solid ${cor}`, borderRadius: 12, padding: 16, borderLeft: `5px solid ${cor}` }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
-        <span style={{ width: 12, height: 12, borderRadius: 6, background: cor }} />
-        <span className="disp" style={{ fontSize: 17, fontWeight: 700, color: cor }}>{rotulo}</span>
-        <span style={{ fontSize: 12, color: T.sub }}>· Semana {week.n} de 9</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {/* Status da semana */}
+      <div style={{ background: T.card, border: `1px solid ${cor}`, borderRadius: 12, padding: 16, borderLeft: `5px solid ${cor}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+          <span style={{ width: 12, height: 12, borderRadius: 6, background: cor }} />
+          <span className="disp" style={{ fontSize: 17, fontWeight: 700, color: cor }}>{rotulo}</span>
+          <span style={{ fontSize: 12, color: T.sub }}>· Semana {week.n} de 9 · faltam {diasProva} dias p/ prova</span>
+        </div>
+        <div style={{ fontSize: 13.5, color: T.ink, lineHeight: 1.5 }}>{txt}</div>
+        {!semDados && <div style={{ fontSize: 12.5, color: T.sub, marginTop: 6, lineHeight: 1.5 }}>{linha}</div>}
+        {m.lastSim && (
+          <div style={{ fontSize: 12.5, color: T.ink, marginTop: 8 }}>
+            Último simulado ({m.lastSim.label}) — nota projetada no Dia 1: <b style={{ color: m.lastSim.nota >= 70 ? T.green : m.lastSim.nota >= 50 ? T.gold : T.red }}>{m.lastSim.nota}/100</b>
+          </div>
+        )}
+        {m.weak.length > 0 && (
+          <div style={{ marginTop: 8, fontSize: 12.5, color: T.ink }}>
+            <span style={{ color: T.red, fontWeight: 700 }}>Pontos fracos:</span> {m.weak.map((w) => `${w.name} (${w.acc}%)`).join(" · ")}
+          </div>
+        )}
       </div>
-      <div style={{ fontSize: 13.5, color: T.ink, lineHeight: 1.5 }}>{txt}</div>
-      {!semDados && <div style={{ fontSize: 12.5, color: T.sub, marginTop: 6, lineHeight: 1.5 }}>{linha}</div>}
-      {m.lastSim && (
-        <div style={{ fontSize: 12.5, color: T.ink, marginTop: 8 }}>
-          Último simulado ({m.lastSim.label}) — nota projetada no Dia 1: <b style={{ color: m.lastSim.nota >= 70 ? T.green : m.lastSim.nota >= 50 ? T.gold : T.red }}>{m.lastSim.nota}/100</b>
+
+      {/* Panorama do período TODO de estudo (não só a semana) */}
+      <Card>
+        <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Visão geral do período</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))", gap: 10 }}>
+          <MiniStat label="Total de questões" value={m.totDone} />
+          <MiniStat label="Dias estudados" value={m.totalDias} />
+          <MiniStat label="Média por dia" value={m.mediaDia} sub="nos dias que estudou" />
+          <MiniStat label="Acerto geral" value={`${m.acerto}%`} color={m.acerto >= 70 ? T.green : m.acerto > 0 ? T.gold : T.sub} />
+          <MiniStat label="Consistência" value={`${m.consistencia}%`} sub="semanas com ≥4 dias" color={m.consistencia >= 70 ? T.green : m.consistencia >= 40 ? T.gold : T.red} />
+          {trendTxt && <MiniStat label="Acerto recente" value={m.accTrend.delta > 0 ? "↑" : m.accTrend.delta < 0 ? "↓" : "→"} sub={trendTxt} color={trendCor} />}
         </div>
-      )}
-      {m.weak.length > 0 && (
-        <div style={{ marginTop: 8, fontSize: 12.5, color: T.ink }}>
-          <span style={{ color: T.red, fontWeight: 700 }}>Pontos fracos:</span> {m.weak.map((w) => `${w.name} (${w.acc}%)`).join(" · ")}
-        </div>
-      )}
+        {m.primeiraData && <div style={{ fontSize: 11.5, color: T.sub, marginTop: 10 }}>Estudando e registrando desde {fmtBR(m.primeiraData)}.</div>}
+      </Card>
+
+      {/* Diagnóstico claro: o que vai bem / o que preocupa */}
+      <Diagnostico m={m} />
     </div>
   );
 }
 
+function MiniStat({ label, value, sub, color }) {
+  return (
+    <div style={{ background: T.bg, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px" }}>
+      <div style={{ fontSize: 10.5, color: T.sub, textTransform: "uppercase", letterSpacing: .4 }}>{label}</div>
+      <div className="num disp" style={{ fontSize: 22, fontWeight: 700, color: color || T.ink, lineHeight: 1.1, marginTop: 4 }}>{value}</div>
+      {sub && <div style={{ fontSize: 10.5, color: T.sub, marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// Relatório em linguagem clara para o responsável: pontos fortes e o que preocupa.
+function Diagnostico({ m }) {
+  const fortes = m.matStats.filter((s) => s.comAcc && s.acc >= 75).sort((a, b) => b.acc - a.acc);
+  const fracas = m.matStats.filter((s) => s.comAcc && s.acc < 60).sort((a, b) => a.acc - b.acc);
+  const semDados = m.matStats.filter((s) => s.q === 0).map((s) => s.name);
+
+  const alertas = [];
+  if (m.totalDias === 0) alertas.push("Ainda não há registros de estudo.");
+  if (m.accTrend && m.accTrend.delta <= -5) alertas.push(`O acerto caiu de ${m.accTrend.de}% para ${m.accTrend.para}% entre as últimas semanas.`);
+  if (m.consistencia > 0 && m.consistencia < 50) alertas.push("A frequência está irregular — várias semanas com menos de 4 dias de estudo.");
+  if (m.diasSemana < 3 && m.totalDias > 0) alertas.push("Poucos dias de estudo nesta semana.");
+  if (semDados.length >= 3) alertas.push(`Matérias ainda sem nenhuma questão: ${semDados.join(", ")}.`);
+
+  const Bloco = ({ titulo, cor, itens, vazio }) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: cor, textTransform: "uppercase", letterSpacing: .4, marginBottom: 6 }}>{titulo}</div>
+      {itens.length === 0
+        ? <div style={{ fontSize: 12.5, color: T.sub }}>{vazio}</div>
+        : <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>{itens}</div>}
+    </div>
+  );
+
+  return (
+    <Card>
+      <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Diagnóstico</div>
+      <Bloco titulo="Indo bem" cor={T.green} vazio="Ainda sem matéria com acerto consolidado acima de 75%."
+        itens={fortes.map((s) => (
+          <div key={s.id} style={{ fontSize: 13, color: T.ink }}>✓ <b>{s.name}</b> — {s.acc}% de acerto ({s.q} questões)</div>
+        ))} />
+      <Bloco titulo="Precisa reforçar" cor={T.red} vazio="Nenhuma matéria com acerto abaixo de 60% (com volume suficiente)."
+        itens={fracas.map((s) => (
+          <div key={s.id} style={{ fontSize: 13, color: T.ink }}>! <b>{s.name}</b> — {s.acc}% de acerto ({s.q} questões)</div>
+        ))} />
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: T.gold, textTransform: "uppercase", letterSpacing: .4, marginBottom: 6 }}>Atenção</div>
+        {alertas.length === 0
+          ? <div style={{ fontSize: 12.5, color: T.sub }}>Sem alertas no momento. Bom andamento.</div>
+          : <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>{alertas.map((a, i) => <div key={i} style={{ fontSize: 13, color: T.ink }}>• {a}</div>)}</div>}
+      </div>
+    </Card>
+  );
+}
+
 /* ---------- PAINEL ---------- */
-function Painel({ m, week, done, setDone, mode }) {
+function Painel({ m, week, done, setDone, mode, diasProva }) {
   // questões por matéria nesta semana
   const porMat = SUBJECTS.map((s) => ({
     ...s, q: m.wlogs.filter((l) => l.subject === s.id).reduce((a, l) => a + (+l.done || 0), 0),
@@ -511,7 +643,7 @@ function Painel({ m, week, done, setDone, mode }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {mode === "acomp" && <Resumo m={m} week={week} doneCount={doneCount} totalTasks={totalTasks} />}
+      {mode === "acomp" && <Resumo m={m} week={week} doneCount={doneCount} totalTasks={totalTasks} diasProva={diasProva} />}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
         <Stat label="Questões hoje" value={m.qHoje} color={T.gold} />
         <Stat label="Questões na semana" value={m.qSem} sub={`meta ~${WEEKLY_TARGET} (${m.metaPct}%)`} color={m.metaPct >= 90 ? T.green : m.metaPct >= 60 ? T.gold : T.red} />
@@ -634,13 +766,54 @@ function Registrar({ logs, setLogs }) {
 }
 
 /* ---------- PROGRESSO ---------- */
+// Janelas de tempo. "Tudo" cobre todo o período de estudo até a prova (não só 14 dias).
+const RANGES = [
+  { id: "14", label: "14 dias", days: 14 },
+  { id: "30", label: "30 dias", days: 30 },
+  { id: "all", label: "Tudo", days: null },
+];
+
 function Progresso({ logs, week }) {
-  // últimos 14 dias
+  const [range, setRange] = useState("all");
+
+  // Série diária. Começa no 1º dia de estudo (ou em N dias atrás) e vai até HOJE,
+  // preenchendo com 0 os dias sem registro — assim o histórico inteiro fica salvo e visível.
   const days = useMemo(() => {
-    const arr = []; const d = new Date(todayISO());
-    for (let i = 13; i >= 0; i--) { const dd = new Date(d); dd.setDate(d.getDate() - i); const iso = dd.toISOString().slice(0, 10); arr.push({ iso, label: fmtBR(iso), q: logs.filter((l) => l.date === iso).reduce((a, l) => a + (+l.done || 0), 0) }); }
+    const hoje = todayISO();
+    const datas = logs.map((l) => l.date).filter(Boolean).sort();
+    const r = RANGES.find((x) => x.id === range) || RANGES[2];
+
+    let inicio;
+    if (r.days == null) {
+      inicio = datas[0] || hoje; // todo o período: do primeiro registro até hoje
+    } else {
+      const d = new Date(hoje); d.setDate(d.getDate() - (r.days - 1));
+      inicio = d.toISOString().slice(0, 10);
+    }
+    // segurança: no máximo ~200 barras pra não pesar no celular
+    const arr = [];
+    const d = new Date(inicio + "T00:00:00");
+    const fim = new Date(hoje + "T00:00:00");
+    let guard = 0;
+    while (d <= fim && guard < 220) {
+      const iso = d.toISOString().slice(0, 10);
+      arr.push({ iso, label: fmtBR(iso), q: logs.filter((l) => l.date === iso).reduce((a, l) => a + (+l.done || 0), 0) });
+      d.setDate(d.getDate() + 1); guard++;
+    }
     return arr;
-  }, [logs]);
+  }, [logs, range]);
+
+  const totalPeriodo = days.reduce((a, d) => a + d.q, 0);
+
+  // Evolução por semana (as 9 do plano) — questões e acerto, a jornada inteira.
+  const porSemana = useMemo(() => WEEKS.map((w) => {
+    const wl = logs.filter((l) => l.date >= w.start && l.date <= w.end);
+    const q = wl.reduce((a, l) => a + (+l.done || 0), 0);
+    const cd = wl.filter((l) => l.correct !== "").reduce((a, l) => a + (+l.done || 0), 0);
+    const cc = wl.filter((l) => l.correct !== "").reduce((a, l) => a + (+l.correct || 0), 0);
+    return { label: `S${w.n}`, q, acc: cd ? Math.round((cc / cd) * 100) : null };
+  }), [logs]);
+  const temSemana = porSemana.some((s) => s.q > 0);
 
   const porMat = SUBJECTS.map((s) => {
     const ls = logs.filter((l) => l.subject === s.id);
@@ -655,16 +828,46 @@ function Progresso({ logs, week }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <Card>
-        <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Questões por dia — últimos 14 dias</div>
-        <ResponsiveContainer width="100%" height={210}>
-          <BarChart data={days} margin={{ top: 4, right: 6, left: -18, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke={T.line} vertical={false} />
-            <XAxis dataKey="label" tick={{ fill: T.sub, fontSize: 10 }} axisLine={{ stroke: T.line }} tickLine={false} interval="preserveStartEnd" minTickGap={6} />
-            <YAxis tick={{ fill: T.sub, fontSize: 10 }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
-            <Tooltip contentStyle={{ background: T.bg2, border: `1px solid ${T.line}`, borderRadius: 8, color: T.ink }} cursor={{ fill: "#ffffff08" }} labelStyle={{ color: T.sub }} />
-            <Bar dataKey="q" radius={[4, 4, 0, 0]} fill={T.gold} />
-          </BarChart>
-        </ResponsiveContainer>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          <div className="disp" style={{ fontSize: 15, fontWeight: 700 }}>Questões por dia</div>
+          <div style={{ display: "flex", background: T.bg, borderRadius: 8, padding: 3, border: `1px solid ${T.line}` }}>
+            {RANGES.map((r) => (
+              <button key={r.id} onClick={() => setRange(r.id)} style={{ border: "none", background: range === r.id ? T.gold : "transparent", color: range === r.id ? "#0A1622" : T.sub, fontWeight: 600, fontSize: 12, padding: "7px 11px", minHeight: 36, borderRadius: 6 }}>{r.label}</button>
+            ))}
+          </div>
+        </div>
+        {totalPeriodo === 0 ? <Empty txt="Sem registros neste período ainda." /> : (
+          <ResponsiveContainer width="100%" height={210}>
+            <BarChart data={days} margin={{ top: 4, right: 6, left: -18, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.line} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: T.sub, fontSize: 10 }} axisLine={{ stroke: T.line }} tickLine={false} interval="preserveStartEnd" minTickGap={24} />
+              <YAxis tick={{ fill: T.sub, fontSize: 10 }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
+              <Tooltip contentStyle={{ background: T.bg2, border: `1px solid ${T.line}`, borderRadius: 8, color: T.ink }} cursor={{ fill: "#ffffff08" }} labelStyle={{ color: T.sub }} />
+              <Bar dataKey="q" radius={[4, 4, 0, 0]} fill={T.gold} />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+        <div style={{ fontSize: 11.5, color: T.sub, marginTop: 8 }}>
+          {totalPeriodo} questões no período · {days.length} {days.length === 1 ? "dia" : "dias"} mostrados
+        </div>
+      </Card>
+
+      <Card>
+        <div className="disp" style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>Evolução por semana — as 9 semanas até a prova</div>
+        {!temSemana ? <Empty txt="A evolução por semana aparece conforme os registros entram." /> : (
+          <ResponsiveContainer width="100%" height={230}>
+            <ComposedChart data={porSemana} margin={{ top: 6, right: 6, left: -18, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.line} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: T.sub, fontSize: 11 }} axisLine={{ stroke: T.line }} tickLine={false} />
+              <YAxis yAxisId="q" tick={{ fill: T.sub, fontSize: 10 }} axisLine={false} tickLine={false} width={30} allowDecimals={false} />
+              <YAxis yAxisId="acc" orientation="right" domain={[0, 100]} tick={{ fill: T.sub, fontSize: 10 }} axisLine={false} tickLine={false} width={30} />
+              <Tooltip contentStyle={{ background: T.bg2, border: `1px solid ${T.line}`, borderRadius: 8 }} formatter={(v, n) => n === "Acerto %" ? [v == null ? "—" : `${v}%`, n] : [v, n]} cursor={{ fill: "#ffffff08" }} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar yAxisId="q" dataKey="q" name="Questões" radius={[4, 4, 0, 0]} fill={T.gold} />
+              <Line yAxisId="acc" type="monotone" dataKey="acc" name="Acerto %" stroke={T.green} strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+        )}
       </Card>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
